@@ -1,20 +1,4 @@
-/* X9C103P Basic Operation - Synchronize code with hardware*/
-/*    Move wiper down the minimum tap terminal.            */
-/*    Move wiper up the maximum tap terminal.              */
-/*
- *  Created  Feb 2016
- *  By user  TrewRoad
- *
- *  X9C103P  pin out
- *    Pin 1 INC
- *    Pin 2 U_D
- *    Pin 3 VH
- *    Pin 4 Gnd
- *    Pin 5 VW
- *    Pin 6 VL
- *    Pin 7 CS
- *    Pin 8 Vcc
- */
+
 
 #include <SPI.h>
 #include <Wire.h>
