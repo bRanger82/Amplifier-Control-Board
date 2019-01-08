@@ -1,16 +1,17 @@
-// Example for DS18030-* (for the project, DS18030-050 was used).
-
 #include <Wire.h>
-
-#define DIG_POT_ONE_ADDR  0x51
-#define DIG_POT_TWO_ADDR  0x52
-#define DIG_POT_THR_ADDR  0x53
-
-enum Potentiometer : byte { POT_ZERO = 0xA9, POT_ONE = 0xAA, POT_BOTH = 0xAF }; // Command values from the datasheet
 
 enum DSP_IDX : byte { Volume = 0, Treble = 1, Bass = 2, Balance = 3, Save = 4, Load = 5 };
 
-byte UpdateWiperPosition(byte PotAddr, Potentiometer PotIdx, int NewValue)
+enum POT_CMD_BYTE : byte { POT_ZERO = 0xA9, POT_ONE = 0xAA, POT_BOTH = 0xAF }; // Command values from the datasheet
+
+#define POT_U6_W  B01010010 // write command U6
+#define POT_U6_R  B01010011 // read command U6
+#define POT_U7_W  B01010100 // write command U7
+#define POT_U7_R  B01010101 // read command U7
+#define POT_U8_W  B01010110 // write command U7
+#define POT_U8_R  B01010111 // read command U7
+
+byte SetWiperPosition(byte PotAddr, POT_CMD_BYTE PotIdx, int NewValue)
 {
   // Normalize value, if value exceeds limits of type byte
   byte val = 0;
@@ -25,7 +26,7 @@ byte UpdateWiperPosition(byte PotAddr, Potentiometer PotIdx, int NewValue)
   val = (byte)NewValue;
 
   // Send value to the digital potentiometer IC
-  Wire.beginTransmission(PotAddr); // transmit to device #44 (0x2c)
+  Wire.beginTransmission(PotAddr); // transmit to device
   Wire.write(byte(PotIdx));        // sends command byte
   Wire.write(val);                 // sends potentiometer value byte
   Wire.endTransmission();          // stop transmitting
@@ -37,26 +38,26 @@ byte UpdateWiperPosition(byte PotAddr, Potentiometer PotIdx, int NewValue)
   return val;
 }
 
-byte SetWiperPosition(DSP_IDX dsp_idx, int Value)
+byte UpdateWiperPosition(DSP_IDX dsp_idx, int Value)
 {
   byte Addr = 0;
   byte Poti = 0;
   switch (dsp_idx)
   {
     case Volume:
-      Addr = DIG_POT_ONE_ADDR;
+      Addr = POT_U6_W;
       Poti = POT_ZERO;
       break;
     case Treble:
-      Addr = DIG_POT_ONE_ADDR;
+      Addr = POT_U6_W;
       Poti = POT_ONE;
       break;
     case Bass:
-      Addr = DIG_POT_TWO_ADDR;
+      Addr = POT_U7_W;
       Poti = POT_ZERO;
       break;
     case Balance:
-      Addr = DIG_POT_TWO_ADDR;
+      Addr = POT_U7_W;
       Poti = POT_ONE;
       break;
     default:
@@ -65,16 +66,29 @@ byte SetWiperPosition(DSP_IDX dsp_idx, int Value)
       break;
   }
 
-  return UpdateWiperPosition(Addr, Poti, Value);
+  return SetWiperPosition(Addr, Poti, Value);
 }
+
 
 void setup() 
 {
-  Wire.begin();
+  Serial.begin(9600);
+  Serial.println("Startup");
+  Serial.print("POT_U6_W (hex): 0x");
+  Serial.println(POT_U6_W, HEX);
+  Serial.print("POT_U6_R (hex): 0x");
+  Serial.println(POT_U6_R, HEX);
+  Serial.print("POT_U7_W (hex): 0x");
+  Serial.println(POT_U7_W, HEX);
+  Serial.print("POT_U7_R (hex): 0x");
+  Serial.println(POT_U7_R, HEX);
+  Serial.print("POT_U8_W (hex): 0x");
+  Serial.println(POT_U8_W, HEX);
+  Serial.print("POT_U8_R (hex): 0x");
+  Serial.println(POT_U8_R, HEX);
 }
 
 void loop() 
 {
-  UpdateWiperPosition(DIG_POT_ONE_ADDR, POT_ZERO, 230);
   delay(5000);
 }
