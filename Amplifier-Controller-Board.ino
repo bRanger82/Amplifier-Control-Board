@@ -1,9 +1,9 @@
-
-
 #include <SPI.h>
 #include <Wire.h>
-#include <Adafruit_GFX.h>
-#include <Adafruit_SSD1306.h>
+#include <LiquidCrystal_I2C.h>
+
+// Set the LCD address to 0x27 for a 16 chars and 2 line display
+LiquidCrystal_I2C lcd(0x27, 20, 4);
 
 // Definition of the rotary encoder connection (hardware de-bounced)
 #define RE_OUTPUT_A  5
@@ -13,30 +13,17 @@
 #define EXT_BUTTON   3
 
 
-// Definition and declaration for an SSD1306 display connected to I2C (SDA, SCL pins)
-#define SCREEN_WIDTH 128 // OLED display width, in pixels
-#define SCREEN_HEIGHT 64 // OLED display height, in pixels
-
-#define OLED_RESET     -1 // Reset pin # (or -1 if sharing Arduino reset pin)
-Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
-#define I2C_DISPLAY    0x3C // --> I2C OLED display address
-
 // Definition(s) for the EEPROM
 #define I2C_EEPROM     0x50 // --> I2C EEPROM memory address
 
 // Definition(s) for the digital potentiometers
-#define ANALOG_REFERENCE  5.0             // Alter for 3.3V Arduino
-#define m_steps            99             // Defines how many steps the digital potiometer has, from Low to High
-#define POT_VALUE      10000L             // Nominal POT value
-#define PULSE_TIMED        10             // millisecond delay 
-#define STEP_OHMS      POT_VALUE/m_steps  // Number of ohms per tap point
+#define m_steps        1   // Defines how many steps the digital potiometer has, from Low to High
 
-#define DS1804_FIFTY 50000
-#define DS1804_TEN   10000
-
-#define UP_STEP   5
-#define DW_STEP   5
-#define MAX_ITEMS 5
+#define UP_STEP        1   // Difference for one step up on rotary encoder
+#define DW_STEP        1   // Difference for one step down on the rotary encoder
+#define MAX_STEP_UP  255   // Maxumum value for the digital potentiometer
+#define MIN_STEP_DW    0   // Minimum value for the digital potentiometer
+#define MAX_ITEMS      5
 
 #define pinINC    8   // --> X9C103P pin 1
 #define pinUD     9   // --> X9C103P pin 2
@@ -55,15 +42,7 @@ byte m_wiperPosition [4] = { 0 };
 
 volatile byte curr_IDX = 0;
 
-#define tapPoints  100           // X9C103P specs
-boolean countDirection  = true;  // for testing only, TBD: replace in production code
-
-enum Poti : byte { Volume = 0, Treble = 1, Bass = 2, Balance = 3, Save = 4, Load = 5 };  // different potentiometer types
-
-void InitDigitalPotentiometer();                      // initialization procedure for the digital potentiometers
-byte SetWiperPosition(byte);                          // Sets the wiper position, which is currently acive (curr_IDX)
-void InitiateDisplay();                               // initalization of the display
-void DisplayText(String);                             // outputs the given text on the display
+enum DSP_IDX : byte { Volume = 0, Treble = 1, Bass = 2, Balance = 3, Save = 4, Load = 5 };  // different potentiometer types
 
 // Definition of the save/load menu
 volatile byte idx_save = 1;
@@ -71,39 +50,79 @@ volatile byte idx_load = 1;
 volatile byte idx_menu = 1;
 volatile bool ShowSave = false;
 
+// I2C potentiometer definitions
+#define POT_U6_W 0x28
+#define POT_U7_W 0x29
+#define POT_U8_W 0x2B
 
-// initalization of the digital potentiometer
-void InitDigitalPotentiometer()
+#define POT_ZERO  0xA9
+#define POT_ONE   0xAA
+#define POT_BOTH  0xAF
+
+byte SetWiperPositionI2C(const byte PotAddr, const byte PotIdx, const byte NewValue)
 {
-  pinMode( CS_VOL, OUTPUT );
-  pinMode( CS_TRE, OUTPUT );
-  pinMode( CS_BAS, OUTPUT );
-  pinMode( CS_BAL, OUTPUT );
-  
-  digitalWrite( CS_VOL, HIGH );
-  digitalWrite( CS_TRE, HIGH );
-  digitalWrite( CS_BAS, HIGH );
-  digitalWrite( CS_BAL, HIGH );  
-  
-  pinMode( pinINC, OUTPUT );
-  pinMode( pinUD, OUTPUT );
-  
-  digitalWrite( pinINC, HIGH );
+  // Send value to the digital potentiometer IC
+  Wire.beginTransmission(PotAddr); // transmit to device
+  Wire.write(byte(PotIdx));        // sends command byte
+  Wire.write(NewValue);            // sends potentiometer value byte
+  Wire.endTransmission();          // stop transmitting
+
+  // take some time to breath
+  delay(5);
+
+  // return the new value set
+  return NewValue;
 }
 
-byte SetWiperPosition( byte wiperPosition ) 
+byte UpdateWiperPositionI2C(const DSP_IDX dsp_idx, int Value)
 {
+  byte NewValue = 0;
+  if (Value > 255)
+  {
+    NewValue = 255;
+  }
+  if (Value < 0)
+  {
+    NewValue = 0 ;
+  }
+  NewValue = (byte)Value;
   
-  SetWiperPositionIdx(curr_IDX, wiperPosition);
-  DisplayWiperItem(curr_IDX);
-  return m_wiperPosition[curr_IDX];
+  byte Addr = 0;
+  byte Poti = 0;
+  switch (dsp_idx)
+  {
+    case Volume:
+      Addr = POT_U6_W;
+      Poti = POT_ZERO;
+      break;
+    case Treble:
+      Addr = POT_U6_W;
+      Poti = POT_ONE;
+      break;
+    case Bass:
+      Addr = POT_U7_W;
+      Poti = POT_ZERO;
+      break;
+    case Balance:
+      Addr = POT_U7_W;
+      Poti = POT_ONE;
+      break;
+    default:
+      Addr = 0;
+      Poti = 0;
+      break;
+  }
+
+  m_wiperPosition[dsp_idx] = SetWiperPositionI2C(Addr, Poti, NewValue);
+  DisplayWiperItem(dsp_idx);
+  return m_wiperPosition[dsp_idx];
 }
 
-void DisplayWiperItem(byte idx)
+void DisplayWiperItem(const DSP_IDX idx)
 {
   String dsp = "";
   
-  switch (curr_IDX)
+  switch (idx)
   {
     case Volume:
       dsp += "Volume";
@@ -121,16 +140,7 @@ void DisplayWiperItem(byte idx)
       dsp += "Undefined";
       break;
   }
-  dsp += "\n";
-  dsp += String(m_wiperPosition[curr_IDX]);
-  DisplayText(dsp);
-}
-
-unsigned long wiperPositionToResistance( byte proposedWiperPosition ) 
-{
-  // work out the resistance from a wiper position
-  byte newWiperPosition = constrain( proposedWiperPosition, 0, m_steps );
-  return map( newWiperPosition, 0, m_steps, 0, DS1804_TEN );
+  DisplayText(dsp, String(m_wiperPosition[idx]));
 }
 
 void InitiateRotaryEncoder()
@@ -140,82 +150,16 @@ void InitiateRotaryEncoder()
   pinMode(RE_OUTPUT_B, INPUT);
 }
 
-void SetWiperPositionIdx(byte idx, byte wiperPosition)
-{
-  byte SelectPin = 0;
-
-  if (wiperPosition > 99)
-  {
-    wiperPosition = 99;
-  }
-  if (wiperPosition < 0)
-  {
-    wiperPosition = 0;
-  }
-  
-  switch (idx)
-  {
-    case Volume:
-      SelectPin = CS_VOL;
-      break;
-    case Treble:
-      SelectPin = CS_TRE;
-      break;
-    case Bass: 
-      SelectPin = CS_BAS;
-      break;
-    case Balance: 
-      SelectPin = CS_BAL;
-      break;
-    default:
-      break;
-  }
-  if (SelectPin == 0)
-  {
-    return;
-  }
-  
-  byte delta = abs(m_wiperPosition[idx] - wiperPosition);
-  digitalWrite(SelectPin, LOW); //Tell chip that we're going to send data 
-  
-  if (m_wiperPosition[idx] < wiperPosition)
-  {
-    digitalWrite(pinUD, HIGH);
-  } else
-  {
-    digitalWrite(pinUD, LOW);
-  }
-   
-  digitalWrite(pinINC, HIGH); 
-  for(byte i = 0; i<=delta; i++)
-  {
-      digitalWrite(pinINC, LOW);
-      delayMicroseconds(1);
-      digitalWrite(pinINC, HIGH);
-      delayMicroseconds(1);
-  }
-  digitalWrite(SelectPin, HIGH);
-  m_wiperPosition[idx] = wiperPosition;  
-}
-
 void InitiateDisplay()
 {
-  // SSD1306_SWITCHCAPVCC = generate display voltage from 3.3V internally
-  display.begin(SSD1306_SWITCHCAPVCC, I2C_DISPLAY);
-  /*if(!) 
-  { 
-    Serial.println(F("OLED failed"));
-    for(;;); // Don't proceed, loop forever
-  }
-  */
-  // Show initial display buffer contents on the screen --
-  // the library initializes this with an Adafruit splash screen.
-  display.display();
-  delay(5000); // Pause for 5 seconds
-
-  // Clear the buffer
-  display.clearDisplay();
-  display.display();  
+  lcd.begin();
+  lcd.backlight();
+  lcd.clear();
+  lcd.setCursor(0, 1);
+  lcd.print("Welcome back"); 
+  lcd.setCursor(0, 2);
+  lcd.print("Stephanie"); 
+  delay(5000);
 }
 
 void InitiateExternalButtons()
@@ -262,89 +206,92 @@ void setup()
   
   // Initiate all input and outputs
   InitiateDisplay();
-  InitDigitalPotentiometer();
   InitiateRotaryEncoder();
   InitiateExternalButtons();
 
+  curr_IDX = 0;  // Set default index value
+  
   delay(30);
   LoadPreset((byte)1);
   delay(30);
-  DisplayWiperItem(curr_IDX);
+  
+  DisplayWiperItem((DSP_IDX)curr_IDX);
   delay(30);
 }
 
+#define CNT_ITM_MAX 3
+
 void DisplayMenu(bool ShowSave, byte idxCursor)
 {
-  display.clearDisplay();
-  display.setTextSize(1);      // Normal 1:1 pixel scale
-  display.setTextColor(WHITE); // Draw white text
-  display.setCursor(0, 0);     // Start at top-left corner
-  display.cp437(true);         // Use full 256 char 'Code Page 437' font
+  
+  lcd.clear();
+  lcd.setCursor(0, 0);
   if (ShowSave)
   {
-    display.println("Save preset:\n");
+    lcd.print("Save preset:");
     idx_save = idxCursor;
   } else
   {
-    display.println("Load preset:\n");
+    lcd.print("Load preset:");
     idx_load = idxCursor;
   }
   
   String StdText  = "   ";
   String TextStar = "(*)"; // selected item
-  for (byte pos = 1; pos <= 6; pos++)
+  for (byte pos = 1; pos <= CNT_ITM_MAX; pos++)
   {
+    lcd.setCursor(0, pos);
     if (idxCursor == pos)
     {
-      display.println(TextStar + " Preset " + String(pos) + " " + TextStar);  
+      lcd.print(TextStar + " Preset " + String(pos) + " " + TextStar);  
     } else
     {
-      display.println(StdText + " Preset " + String(pos));  
+      lcd.print(StdText + " Preset " + String(pos));  
     }
   }
-  
-  display.display();
 }
 
-void ProcessStep(bool StepUp)
+void ProcessStep(bool StepUp, const DSP_IDX idx)
 {
   if (StepUp)
   {
     digitalWrite(LED_G, HIGH);
-    delay(150);
+    delay(50);
     digitalWrite(LED_G, LOW);
     
-    if (curr_IDX <= 3)
+    if (idx <= 3)
     {
-      SetWiperPosition(m_wiperPosition[curr_IDX] + UP_STEP);
-    } else if (curr_IDX == 4 || curr_IDX == 5)
+      int NewWiperPosition = (int)m_wiperPosition[idx] + (int)UP_STEP;
+      UpdateWiperPositionI2C(idx, NewWiperPosition);
+    } else if (idx == 4 || idx == 5)
     {
-      if (curr_IDX == 4) { idx_menu = idx_save; } else { idx_menu = idx_load; }
+      if (idx == 4) { idx_menu = idx_save; } else { idx_menu = idx_load; }
       idx_menu++;
-      if (idx_menu > 6)
+      if (idx_menu > CNT_ITM_MAX)
       {
-        idx_menu = 6;
+        idx_menu = CNT_ITM_MAX;
       }
-      DisplayMenu((curr_IDX == 4), idx_menu);
+      DisplayMenu((idx == 4), idx_menu);
     } 
   } else
   {
     digitalWrite(LED_R, HIGH);
-    delay(150);
+    delay(50);
     digitalWrite(LED_R, LOW);
     
-    if (curr_IDX <= 3)
+    if (idx <= 3)
     {
-      SetWiperPosition(m_wiperPosition[curr_IDX] - DW_STEP);
-    } else if (curr_IDX == 4 || curr_IDX == 5)
+      int NewWiperPosition = (int)m_wiperPosition[idx] - (int)DW_STEP;
+      UpdateWiperPositionI2C(idx, NewWiperPosition);
+    } else if (idx == 4 || idx == 5)
     {
-      if (curr_IDX == 4) { idx_menu = idx_save; } else { idx_menu = idx_load; }
+      if (idx == 4) { idx_menu = idx_save; } else { idx_menu = idx_load; }
       idx_menu--;
       if (idx_menu < 1)
       {
         idx_menu = 1;
       }
-      DisplayMenu((curr_IDX == 4), idx_menu);
+      DisplayMenu((idx == 4), idx_menu);
     } 
   }
 }
@@ -355,10 +302,12 @@ void loop()
   {
     if (digitalRead(RE_OUTPUT_A) == LOW)
     {
-      ProcessStep(true);
+      // Rotary encoder was turned 'up'
+      ProcessStep(true, (DSP_IDX)curr_IDX);
     } else
     {
-      ProcessStep(false);
+      // Rotary encoder was turned 'down'
+      ProcessStep(false, (DSP_IDX)curr_IDX);
     }
     // debouncing
     while (digitalRead(RE_OUTPUT_B) == HIGH) {}
@@ -373,7 +322,7 @@ void loop()
     
     if (curr_IDX <= 3)
     {
-      DisplayWiperItem(curr_IDX);
+      DisplayWiperItem((DSP_IDX)curr_IDX);
     } else if (curr_IDX == 4)
     {
       DisplayMenu(true, idx_save);
@@ -387,24 +336,26 @@ void loop()
     
   } else if (digitalRead(EXT_BUTTON) == HIGH)
   {
-    Serial.println("Ext. button pressed!");
-    String dsp = "";
+    String txt = "";
+    String value = "";
     if (curr_IDX == 4)
     {
       SavePreset(idx_save);
-      dsp = "Saved\nPreset: " + String(idx_save);
-      DisplayText(dsp);
+      txt = "Saved";
+      value = "preset: " + String(idx_save);
     } else if (curr_IDX == 5)
     {
       LoadPreset(idx_load);
-      dsp = "Load\nPreset: " + String(idx_load);
-      DisplayText(dsp);
+      txt = "Loaded";
+      value = "preset: " + String(idx_load);
+      
     } else
     {
-      dsp = "EXT_BTN";
+      txt = "EXT_BTN";
+      value = "Pressed!";
     }
     
-    DisplayText(dsp);
+    DisplayText(txt, value);
     
     // debouncing
     while(digitalRead(EXT_BUTTON) == HIGH) { }
@@ -415,6 +366,7 @@ void SavePreset(byte idx)
 {
   for (byte b = 0; b <= 3; b++)
   {
+    // Calculate the correct address for saving the value
     unsigned int startPos = (sizeof(m_wiperPosition) * idx) + OFFSET_MEMORY + b;
     i2c_eeprom_write_byte(I2C_EEPROM, startPos, m_wiperPosition[b]);
     delay(20);
@@ -428,18 +380,16 @@ void LoadPreset(byte idx)
     unsigned int startPos = (sizeof(m_wiperPosition) * idx) + OFFSET_MEMORY + b;
     byte ValueFromEEPROM = i2c_eeprom_read_byte(I2C_EEPROM, startPos);
     delay(20);
-    SetWiperPositionIdx(b, ValueFromEEPROM);
+    m_wiperPosition[b] = ValueFromEEPROM;
+    UpdateWiperPositionI2C(b, m_wiperPosition[b]);
   }
 }
 
-void DisplayText(String Text)
+void DisplayText(String Text, String Value)
 {
-  display.clearDisplay();
-
-  display.setTextSize(2);      // Normal 1:1 pixel scale
-  display.setTextColor(WHITE); // Draw white text
-  display.setCursor(0, 0);     // Start at top-left corner
-  display.cp437(true);         // Use full 256 char 'Code Page 437' font
-  display.print(Text);  
-  display.display();
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print(Text);  
+  lcd.setCursor(0, 1);
+  lcd.print(Value);
 }
