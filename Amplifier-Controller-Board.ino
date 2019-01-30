@@ -1,18 +1,30 @@
-#include <SPI.h>
+#include <Arduino.h>
 #include <Wire.h>
-#include <LiquidCrystal_I2C.h>
+#include <U8g2lib.h>
+#include <SPI.h>
 
-// Set the LCD address to 0x27 for a 16 chars and 2 line display
-LiquidCrystal_I2C lcd(0x27, 20, 4);
+#define AMP_STDBY    11  // Stand-By for the Audio Amplifier
+#define OPTP_CPLR    13  // Used for the Opto-Coupler
+#define RELAIS_K2    14  // Used for the relais K2
+#define RELAIS_K1    15  // Used for the relais K1
+
+const byte OPTO_CPLR  = B00000001;
+const byte RLY_K1_ACT = B00000010;
+const byte RLY_K2_ACT = B00000100;
+
+// This variable stores the relais and opto-coupler states and is used to store/obtain the information from EEPROM.
+volatile byte EXT_STATE = 0;
 
 // Definition of the rotary encoder connection (hardware de-bounced)
-#define RE_OUTPUT_A  5
-#define RE_OUTPUT_B  2
-#define RE_BUTTON    4
+#define RE_OUTPUT_A  22
+#define RE_OUTPUT_B  21
+#define RE_BUTTON    23
+
 // Definition of the additional button (hardware de-bounced)
-#define EXT_BUTTON   3
+#define EXT_BTN_ONE  19
+#define EXT_BTN_TWO  20
 
-
+#define LED 14
 // Definition(s) for the EEPROM
 #define I2C_EEPROM     0x50 // --> I2C EEPROM memory address
 
@@ -25,22 +37,27 @@ LiquidCrystal_I2C lcd(0x27, 20, 4);
 #define MIN_STEP_DW    0   // Minimum value for the digital potentiometer
 #define MAX_ITEMS      5
 
-#define pinINC    8   // --> X9C103P pin 1
-#define pinUD     9   // --> X9C103P pin 2
-#define CS_VOL   10   // --> Select pin for the volume potentiometer
-#define CS_TRE   11   // --> Select pin for the treble potentiometer
-#define CS_BAS   12   // --> Select pin for the bass potentiometer
-#define CS_BAL   13   // --> Select pin for the balance potentiometer
-
-// Definition of the LED pins
-#define LED_G     6 // Green LED
-#define LED_R     7 // Red LED
 
 #define OFFSET_MEMORY 16
 
 byte m_wiperPosition [4] = { 0 };
 
+volatile byte ext_IDX  = 1;
+#define IDX_EXT_REL_1 1
+#define IDX_EXT_REL_2 2
+#define IDX_EXT_OPTPC 3
+#define IDX_EXT_MAX   3
+
+
 volatile byte curr_IDX = 0;
+#define MAX_IDX 6
+#define IDX_VOL 0
+#define IDX_TRE 1
+#define IDX_BAS 2
+#define IDX_BAL 3
+#define IDX_SAV 4
+#define IDX_LOD 5
+#define IDX_EXT 6
 
 enum DSP_IDX : byte { Volume = 0, Treble = 1, Bass = 2, Balance = 3, Save = 4, Load = 5 };  // different potentiometer types
 
@@ -58,6 +75,11 @@ volatile bool ShowSave = false;
 #define POT_ZERO  0xA9
 #define POT_ONE   0xAA
 #define POT_BOTH  0xAF
+
+#include "splash.h"
+
+
+U8G2_SSD1327_MIDAS_128X128_F_4W_SW_SPI u8g2(U8G2_R0, /* clock=*/ 7, /* data=*/ 5, /* cs=*/ 4, /* dc=*/ 3, /* reset=*/ 1);
 
 byte SetWiperPositionI2C(const byte PotAddr, const byte PotIdx, const byte NewValue)
 {
@@ -114,10 +136,23 @@ byte UpdateWiperPositionI2C(const DSP_IDX dsp_idx, int Value)
   }
 
   m_wiperPosition[dsp_idx] = SetWiperPositionI2C(Addr, Poti, NewValue);
-  DisplayWiperItem(dsp_idx);
+  DisplayWiperItem((DSP_IDX)dsp_idx);
   return m_wiperPosition[dsp_idx];
 }
 
+// Check if a specific bit is set (pos means position from the least significant bit)
+bool IsBitSet(byte b, byte pos)
+{
+  return (b & (1 << pos)) != 0;
+}
+
+// sets a speficif bit, pos means position from the least significant bit)
+byte SetBit(byte b, byte pos)
+{
+  byte mask = (byte)(1 << pos);
+  return (b |= mask);
+}
+        
 void DisplayWiperItem(const DSP_IDX idx)
 {
   String dsp = "";
@@ -143,28 +178,32 @@ void DisplayWiperItem(const DSP_IDX idx)
   DisplayText(dsp, String(m_wiperPosition[idx]));
 }
 
-void InitiateRotaryEncoder()
+void InitiateRotaryEncoder(void)
 {
   pinMode(RE_BUTTON,   INPUT);
   pinMode(RE_OUTPUT_A, INPUT);
   pinMode(RE_OUTPUT_B, INPUT);
 }
 
-void InitiateDisplay()
+void InitiateDisplay(void)
 {
-  lcd.begin();
-  lcd.backlight();
-  lcd.clear();
-  lcd.setCursor(0, 1);
-  lcd.print("Welcome back"); 
-  lcd.setCursor(0, 2);
-  lcd.print("Stephanie"); 
-  delay(5000);
+  u8g2.setBusClock(9000000UL);
+  u8g2.begin();
+  u8g2.clearBuffer();
+  u8g2.setColorIndex(1);
+  u8g2.setFont(u8g2_font_ncenB10_tr);  // choose a suitable font
+  u8g2.drawStr(3, 22, "Hello Stephanie!");
+  u8g2.drawXBM(0, 32, splash1_width, splash1_height, splash1_data);  
+  u8g2.drawStr(3, 112, "  Welcome Back  ");
+  u8g2.sendBuffer();         
+  u8g2.clearBuffer();
+  delay(10000);
 }
 
 void InitiateExternalButtons()
 {
-  pinMode(EXT_BUTTON, INPUT);
+  pinMode(EXT_BTN_ONE, INPUT);
+  pinMode(EXT_BTN_TWO, INPUT);
 }
 
 void i2c_eeprom_write_byte( int deviceaddress, unsigned int eeaddress, byte data ) 
@@ -192,78 +231,90 @@ byte i2c_eeprom_read_byte( int deviceaddress, unsigned int eeaddress )
   return readData;
 }
 
+void InitialExternalDevices(void)
+{
+  pinMode(AMP_STDBY, OUTPUT); // Stand-By for the Audio Amplifier
+  pinMode(OPTP_CPLR, OUTPUT); // Used for the Opto-Coupler
+  pinMode(RELAIS_K2, OUTPUT); // Used for the relais K2
+  pinMode(RELAIS_K1, OUTPUT); // Used for the relais K1
+  digitalWrite(OPTP_CPLR, LOW);
+  digitalWrite(RELAIS_K1, LOW);
+  digitalWrite(RELAIS_K2, LOW);
+}
 
 void setup() 
 {
+  pinMode(LED, OUTPUT);
+  
   // Invoke the serial communicatiom
   Serial.begin(9600);
-
-  // LED* for testing only
-  pinMode(LED_G, OUTPUT);
-  pinMode(LED_R, OUTPUT);
-  digitalWrite(LED_G, LOW);
-  digitalWrite(LED_R, LOW);
-  
-  // Initiate all input and outputs
   InitiateDisplay();
   InitiateRotaryEncoder();
   InitiateExternalButtons();
-
-  curr_IDX = 0;  // Set default index value
+  InitialExternalDevices();
   
+  curr_IDX = 0;  // Set default index value
+
   delay(30);
-  LoadPreset((byte)1);
+  //LoadPreset((byte)1);
+  Serial.println("LoadPreset done!");
   delay(30);
   
   DisplayWiperItem((DSP_IDX)curr_IDX);
+  Serial.println("DisplayWiperItem done!");
   delay(30);
 }
 
-#define CNT_ITM_MAX 3
+#define CNT_ITM_MAX 6
+
 
 void DisplayMenu(bool ShowSave, byte idxCursor)
 {
-  
-  lcd.clear();
-  lcd.setCursor(0, 0);
+  u8g2.clearBuffer();
+  u8g2.setFont(u8g2_font_prospero_bold_nbp_tf);
   if (ShowSave)
   {
-    lcd.print("Save preset:");
+    const char * savePS = "Save preset";
+    u8g2.drawStr(27, 12, savePS);
     idx_save = idxCursor;
   } else
   {
-    lcd.print("Load preset:");
+    //lcd.print("Load preset:");
+    const char * loadPS = "Load preset";
+    u8g2.drawStr(27, 12, loadPS);
     idx_load = idxCursor;
   }
-  
+  u8g2.setFont(u8g2_font_profont12_tf);
   String StdText  = "   ";
   String TextStar = "(*)"; // selected item
   for (byte pos = 1; pos <= CNT_ITM_MAX; pos++)
   {
-    lcd.setCursor(0, pos);
+    char itm [40];
+    String timStr;
     if (idxCursor == pos)
     {
-      lcd.print(TextStar + " Preset " + String(pos) + " " + TextStar);  
+      timStr = TextStar + " Preset " + String(pos) + " " + TextStar;  
+      
     } else
     {
-      lcd.print(StdText + " Preset " + String(pos));  
+      timStr = StdText + " Preset " + String(pos);  
     }
+    timStr.toCharArray(itm, 41);
+    u8g2.drawStr(15, 18  + (pos * 15), itm);
   }
+  u8g2.sendBuffer();
+  u8g2.clearBuffer();
 }
 
 void ProcessStep(bool StepUp, const DSP_IDX idx)
 {
   if (StepUp)
   {
-    digitalWrite(LED_G, HIGH);
-    delay(50);
-    digitalWrite(LED_G, LOW);
-    
     if (idx <= 3)
     {
       int NewWiperPosition = (int)m_wiperPosition[idx] + (int)UP_STEP;
-      UpdateWiperPositionI2C(idx, NewWiperPosition);
-    } else if (idx == 4 || idx == 5)
+      UpdateWiperPositionI2C((DSP_IDX)idx, NewWiperPosition);
+    } else if (idx == IDX_SAV || idx == IDX_LOD)
     {
       if (idx == 4) { idx_menu = idx_save; } else { idx_menu = idx_load; }
       idx_menu++;
@@ -271,19 +322,15 @@ void ProcessStep(bool StepUp, const DSP_IDX idx)
       {
         idx_menu = CNT_ITM_MAX;
       }
-      DisplayMenu((idx == 4), idx_menu);
+      DisplayMenu((idx == IDX_SAV), idx_menu);
     } 
   } else
   {
-    digitalWrite(LED_R, HIGH);
-    delay(50);
-    digitalWrite(LED_R, LOW);
-    
     if (idx <= 3)
     {
       int NewWiperPosition = (int)m_wiperPosition[idx] - (int)DW_STEP;
-      UpdateWiperPositionI2C(idx, NewWiperPosition);
-    } else if (idx == 4 || idx == 5)
+      UpdateWiperPositionI2C((DSP_IDX)idx, NewWiperPosition);
+    } else if (idx == IDX_SAV || idx == IDX_LOD)
     {
       if (idx == 4) { idx_menu = idx_save; } else { idx_menu = idx_load; }
       idx_menu--;
@@ -296,6 +343,8 @@ void ProcessStep(bool StepUp, const DSP_IDX idx)
   }
 }
 
+volatile byte printVal = 0;
+volatile byte idx_ext_test = 1;
 void loop() 
 {
   if (digitalRead(RE_OUTPUT_B) == HIGH)
@@ -310,45 +359,61 @@ void loop()
       ProcessStep(false, (DSP_IDX)curr_IDX);
     }
     // debouncing
-    while (digitalRead(RE_OUTPUT_B) == HIGH) {}
+    //while (digitalRead(RE_OUTPUT_B) == HIGH) {}
     
-  } else if (digitalRead(RE_BUTTON) == HIGH)
+  } else if (digitalRead(RE_BUTTON) == HIGH || true)
   {
     curr_IDX++;
-    if (curr_IDX > 5)
+    if (curr_IDX > MAX_IDX)
     {
-      curr_IDX = 0;
+      curr_IDX = IDX_VOL;
     }
     
     if (curr_IDX <= 3)
     {
       DisplayWiperItem((DSP_IDX)curr_IDX);
-    } else if (curr_IDX == 4)
+    } else if (curr_IDX == IDX_SAV)
     {
+      idx_save++;
+      if (idx_save > CNT_ITM_MAX)
+      {
+        idx_save = 1;
+      }
       DisplayMenu(true, idx_save);
-    } else if (curr_IDX == 5) 
+    } else if (curr_IDX == IDX_LOD) 
     {
+      idx_load++;
+      if (idx_load > CNT_ITM_MAX)
+      {
+        idx_load = 1;
+      }
       DisplayMenu(false, idx_load);
-    } 
+    } else if (curr_IDX == IDX_EXT)
+    {
+      ShowExternal(idx_ext_test++);
+      if (idx_ext_test > IDX_EXT_MAX)
+      {
+        idx_ext_test = 1;
+      }
+    }
 
     // debouncing
-    while(digitalRead(RE_BUTTON) == HIGH) { }
+    // while(digitalRead(RE_BUTTON) == HIGH) { }
     
-  } else if (digitalRead(EXT_BUTTON) == HIGH)
+  } else if (digitalRead(EXT_BTN_ONE) == HIGH)
   {
     String txt = "";
     String value = "";
-    if (curr_IDX == 4)
+    if (curr_IDX == IDX_SAV)
     {
       SavePreset(idx_save);
       txt = "Saved";
-      value = "preset: " + String(idx_save);
-    } else if (curr_IDX == 5)
+      value = "Preset: " + String(idx_save);
+    } else if (curr_IDX == IDX_LOD)
     {
       LoadPreset(idx_load);
       txt = "Loaded";
-      value = "preset: " + String(idx_load);
-      
+      value = "Preset: " + String(idx_load);
     } else
     {
       txt = "EXT_BTN";
@@ -358,8 +423,83 @@ void loop()
     DisplayText(txt, value);
     
     // debouncing
-    while(digitalRead(EXT_BUTTON) == HIGH) { }
+    // while(digitalRead(EXT_BTN_ONE) == HIGH) { }
   }
+  digitalWrite(LED, !digitalRead(LED));
+  delay(500);
+  
+  u8g2.clearBuffer();
+  delay(1);
+}
+
+volatile bool state = true;
+void ShowExternal(byte idx_ext)
+{
+  if (idx_ext > IDX_EXT_MAX)
+  {
+    idx_ext = IDX_EXT_MAX;
+  }
+  u8g2.clearBuffer();
+  delay(1);
+  u8g2.setFont(u8g2_font_profont17_tf);
+  u8g2.drawStr(15, 20, "External");
+  
+  u8g2.setFont(u8g2_font_profont10_tf);
+  if (idx_ext == IDX_EXT_REL_1)
+  {
+    u8g2.drawStr(10, 50, "*Relais 1");
+  } else
+  {
+    u8g2.drawStr(10, 50, " Relais 1");
+  }
+  
+  u8g2.drawStr(70, 50, "ON");
+  u8g2.drawStr(90, 50, "OFF");
+  if (digitalRead(RELAIS_K1) == HIGH) //ON
+  {
+    u8g2.drawFrame(67, 41, 19, 12);
+  } else
+  {
+    u8g2.drawFrame(87, 41, 20, 12);
+  }
+  if (idx_ext == IDX_EXT_REL_2)
+  {
+    u8g2.drawStr(10, 70, "*Relais 2");
+  } else
+  {
+    u8g2.drawStr(10, 70, " Relais 2");
+  }
+  u8g2.drawStr(10, 70, " Relais 2");
+  u8g2.drawStr(70, 70, "ON");
+  u8g2.drawStr(90, 70, "OFF");
+  if (digitalRead(RELAIS_K2) == HIGH) //ON
+  {
+    u8g2.drawFrame(67, 61, 19, 12);
+  } else
+  {
+    u8g2.drawFrame(87, 61, 20, 12);
+  }
+  if (idx_ext == IDX_EXT_OPTPC)
+  {
+    u8g2.drawStr(10, 90, "*OPTO COP");
+  } else
+  {
+    u8g2.drawStr(10, 90, " OPTO COP");
+  }
+  u8g2.drawStr(70, 90, "ON");
+  u8g2.drawStr(90, 90, "OFF");
+  if (digitalRead(OPTP_CPLR) == HIGH) //ON
+  {
+    u8g2.drawFrame(67, 81, 19, 12);
+  } else
+  {
+    u8g2.drawFrame(87, 81, 20, 12);
+  }
+  u8g2.sendBuffer();          // transfer internal memory to the display
+  delay(1);
+  u8g2.clearBuffer();
+  delay(1); 
+  state = !state;
 }
 
 void SavePreset(byte idx)
@@ -381,15 +521,30 @@ void LoadPreset(byte idx)
     byte ValueFromEEPROM = i2c_eeprom_read_byte(I2C_EEPROM, startPos);
     delay(20);
     m_wiperPosition[b] = ValueFromEEPROM;
-    UpdateWiperPositionI2C(b, m_wiperPosition[b]);
+    UpdateWiperPositionI2C((DSP_IDX)b, m_wiperPosition[b]);
   }
 }
 
 void DisplayText(String Text, String Value)
 {
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print(Text);  
-  lcd.setCursor(0, 1);
-  lcd.print(Value);
+  u8g2.clearBuffer();
+  delay(1);
+  u8g2.setFont(u8g2_font_profont29_tf);
+  char cText [15];
+  Text.toCharArray(cText, 29);
+  u8g2.drawStr(15, 40, cText);
+  char cValue [15];
+  Value.toCharArray(cValue, 29);
+  if (Text.length() > 3)
+  {
+    u8g2.drawStr(50, 90, cValue);
+  } else
+  {
+    u8g2.drawStr(10, 90, cValue);
+  }
+  
+  u8g2.sendBuffer();          // transfer internal memory to the display
+  delay(1);
+  u8g2.clearBuffer();
+  delay(1);
 }
