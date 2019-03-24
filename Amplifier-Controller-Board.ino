@@ -94,6 +94,7 @@ U8G2_SSD1327_MIDAS_128X128_F_4W_SW_SPI u8g2(U8G2_R0, /* clock=*/ 7, /* data=*/ 5
 #define SHOW_SPLASH_TIME 5000 // shows the spash screen for 10 seconds
 // End of Display library definition
 
+
 // Definition for the power save mode (display only)
 volatile int LoopCount = 0;
 volatile bool DisplayIsPowerSaveMode = false;
@@ -290,12 +291,13 @@ void InitiateExternalButtons()
 
 void i2c_eeprom_write_byte( int deviceaddress, unsigned int eeaddress, byte data ) 
 {
-    int rdata = data;
     Wire.beginTransmission(deviceaddress);
     Wire.write((int)(eeaddress >> 8)); // MSB
     Wire.write((int)(eeaddress & 0xFF)); // LSB
-    Wire.write(rdata);
+    Wire.write(data);
     Wire.endTransmission();
+
+    delay(5);
 }
 
 byte i2c_eeprom_read_byte( int deviceaddress, unsigned int eeaddress ) 
@@ -313,6 +315,29 @@ byte i2c_eeprom_read_byte( int deviceaddress, unsigned int eeaddress )
   return readData;
 }
 
+void SavePreset(byte idx)
+{
+  for (byte b = 0; b < (sizeof(m_wiperPosition)/sizeof(m_wiperPosition[0])); b++)
+  {
+    // Calculate the correct address for saving the value
+    unsigned int startPos = (sizeof(m_wiperPosition) * idx) + OFFSET_MEMORY + b;
+    i2c_eeprom_write_byte(I2C_EEPROM, startPos, m_wiperPosition[b]);
+    delay(10);
+  }
+}
+
+void LoadPreset(byte idx)
+{
+  for (byte b = 0; b < (sizeof(m_wiperPosition)/sizeof(m_wiperPosition[0])); b++)
+  {
+    unsigned int startPos = (sizeof(m_wiperPosition) * idx) + OFFSET_MEMORY + b;
+    byte ValueFromEEPROM = i2c_eeprom_read_byte(I2C_EEPROM, startPos);
+    delay(10);
+    m_wiperPosition[b] = ValueFromEEPROM;
+    UpdateWiperPositionI2C((DSP_IDX)b, m_wiperPosition[b]);
+  }
+}
+
 void InitialExternalDevices(void)
 {
   pinMode(AMP_STDBY, OUTPUT);   // Stand-By for the Audio Amplifier
@@ -324,20 +349,6 @@ void InitialExternalDevices(void)
   digitalWrite(RELAIS_K2, LOW);
 }
 
-void setup() 
-{
-  InitialExternalDevices();
-  SetStandby(true);
-  InitiateDisplay();
-  InitiateRotaryEncoder();
-  InitiateExternalButtons();
-  curr_IDX = IDX_PRE;  // First item to be shown
-  LoadDefaultPreset();
-  DisplayWiperItem((DSP_IDX)curr_IDX);
-  delay(10);
-  SetStandby(false);
-}
-
 void LoadDefaultPreset(void)
 {
   delay(10);
@@ -347,13 +358,8 @@ void LoadDefaultPreset(void)
 
 void SetStandby(bool StandByOn)
 {
-  if (StandByOn)
-  {
-    digitalWrite(AMP_STDBY, HIGH);
-  } else
-  {
-    digitalWrite(AMP_STDBY, LOW);
-  }
+  digitalWrite(AMP_STDBY, ((StandByOn) ? HIGH : LOW));
+  delay(5);
 }
 
 void DisplayMenu(bool ShowSave, byte idxCursor)
@@ -424,7 +430,7 @@ void ProcessStep(bool StepUp, const DSP_IDX idx)
         ext_IDX = IDX_EXT_REL_1; // min
       }
       ShowExternal(ext_IDX);
-    }
+    } 
   } else
   {
     if (idx <= 4)
@@ -483,6 +489,107 @@ void DelayTimer(byte waitTime)
   {
     delay(100);
   }
+}
+
+
+void RunDebug(void)
+{
+  Serial.print(F("CPU SPEED: "));
+  Serial.println(F_CPU);
+  Serial.print(F("Millis(): "));
+  Serial.println(millis());
+  Serial.println(F("EEPROM values (first 128):"));
+  for (unsigned int startPos = 0; startPos <= 128; startPos++)
+  {
+    byte ValueFromEEPROM = i2c_eeprom_read_byte(I2C_EEPROM, startPos);
+    delay(10);
+    Serial.print(F("\tPos["));
+    Serial.print(startPos);
+    Serial.print(F("] has value ["));
+    Serial.print(ValueFromEEPROM);
+    Serial.println(F("]"));
+  } 
+  Serial.println(F("DONE READING EEPROM values!"));
+  
+  int val = digitalRead(RELAIS_K1);
+  Serial.println(F("Setting Relay 1 to HIGH for 2 seconds"));
+  digitalWrite(RELAIS_K1, HIGH);
+  delay(2000);
+  Serial.println(F("Setting Relay 1 to LOW for 2 seconds"));
+  digitalWrite(RELAIS_K1, LOW);
+  delay(2000);
+  Serial.println(F("Change to original value (Relay 1)"));
+  digitalWrite(RELAIS_K1, val);
+  
+  val = digitalRead(RELAIS_K2);
+  Serial.println(F("Setting Relay 2 to HIGH for 2 seconds"));
+  digitalWrite(RELAIS_K2, HIGH);
+  delay(2000);
+  Serial.println(F("Setting Relay 2 to LOW for 2 seconds"));
+  digitalWrite(RELAIS_K2, LOW);
+  delay(2000);
+  Serial.println(F("Change to original value (Relay 2)"));
+  digitalWrite(RELAIS_K2, val);
+  delay(2000);
+  Serial.println(F("Setting default preset values ...!"));
+  byte backup_wiperPosition [5];
+  backup_wiperPosition[0] = m_wiperPosition[0];
+  backup_wiperPosition[1] = m_wiperPosition[1];
+  backup_wiperPosition[2] = m_wiperPosition[2];
+  backup_wiperPosition[3] = m_wiperPosition[3];
+  backup_wiperPosition[4] = m_wiperPosition[4];
+  Serial.println(F("Setting default preset values for index 1"));
+  m_wiperPosition[0] = 200;
+  m_wiperPosition[1] = 120;
+  m_wiperPosition[2] =  50;
+  m_wiperPosition[3] = 210;
+  m_wiperPosition[4] = 128;
+  SavePreset(1);
+  Serial.println(F("Setting default preset values for index 2"));
+  m_wiperPosition[0] = 160;
+  m_wiperPosition[1] = 100;
+  m_wiperPosition[2] = 100;
+  m_wiperPosition[3] = 120;
+  m_wiperPosition[4] = 128;
+  SavePreset(2);  
+  Serial.println(F("Setting default preset values for index 3"));
+  m_wiperPosition[0] = 120;
+  m_wiperPosition[1] = 180;
+  m_wiperPosition[2] = 10;
+  m_wiperPosition[3] = 200;
+  m_wiperPosition[4] = 128;
+  SavePreset(3);
+  Serial.println(F("Setting default preset values for index 4"));
+  m_wiperPosition[0] = 100;
+  m_wiperPosition[1] = 140;
+  m_wiperPosition[2] = 10;
+  m_wiperPosition[3] = 180;
+  m_wiperPosition[4] = 128;
+  SavePreset(4);
+  Serial.println(F("Setting default preset values for index 5"));
+  m_wiperPosition[0] = 150;
+  m_wiperPosition[1] = 80;
+  m_wiperPosition[2] = 10;
+  m_wiperPosition[3] = 200;
+  m_wiperPosition[4] = 128;
+  SavePreset(5);
+  Serial.println(F("Setting default preset values for index 6"));
+  m_wiperPosition[0] = 150;
+  m_wiperPosition[1] = 120;
+  m_wiperPosition[2] = 30;
+  m_wiperPosition[3] = 240;
+  m_wiperPosition[4] = 128;
+  SavePreset(6); 
+   
+  m_wiperPosition[0] = backup_wiperPosition[0];
+  m_wiperPosition[1] = backup_wiperPosition[1];
+  m_wiperPosition[2] = backup_wiperPosition[2];
+  m_wiperPosition[3] = backup_wiperPosition[3];
+  m_wiperPosition[4] = backup_wiperPosition[4];
+
+  delay(100);
+  Serial.flush();
+  delay(100);
 }
 
 void ChangeExtValue(byte idx)
@@ -548,31 +655,6 @@ void ShowExternal(byte idx_ext)
   delay(1); 
 }
 
-void SavePreset(byte idx)
-{
-  for (byte b = 0; b < (sizeof(m_wiperPosition)/sizeof(m_wiperPosition[0])); b++)
-  {
-    // Calculate the correct address for saving the value
-    unsigned int startPos = (sizeof(m_wiperPosition) * idx) + OFFSET_MEMORY + b;
-    i2c_eeprom_write_byte(I2C_EEPROM, startPos, m_wiperPosition[b]);
-    delay(10);
-  }
-}
-
-void LoadPreset(byte idx)
-{
-  for (byte b = 0; b < (sizeof(m_wiperPosition)/sizeof(m_wiperPosition[0])); b++)
-  {
-    unsigned int startPos = (sizeof(m_wiperPosition) * idx) + OFFSET_MEMORY + b;
-    byte ValueFromEEPROM = i2c_eeprom_read_byte(I2C_EEPROM, startPos);
-    delay(10);
-    m_wiperPosition[b] = ValueFromEEPROM;
-    UpdateWiperPositionI2C((DSP_IDX)b, m_wiperPosition[b]);
-  }
-}
-
-
-
 void PrintRotaryState(void)
 {
   if (digitalRead(RE_OUTPUT_A) == LOW)
@@ -584,43 +666,43 @@ void PrintRotaryState(void)
   }
 }
 
-
 void RotaryEncoderBtnPressed(void)
 {
   ROT_ENC_BTN_PRESSED = true;
 }
 
 
+void setup(void) 
+{
+  Serial.begin(9600);
+  Serial.println(F("InitialExternalDevices"));
+  
+  Wire.begin(); 
+  InitialExternalDevices();
+  Serial.println(F("SetStandby(true)"));
+  SetStandby(true);
+  Serial.println(F("InitiateDisplay"));
+  InitiateDisplay();
+  Serial.println(F("InitiateRotaryEncoder"));
+  InitiateRotaryEncoder();
+  Serial.println(F("InitiateExternalButtons"));
+  InitiateExternalButtons();
+  curr_IDX = IDX_PRE;  // First item to be shown
+  Serial.println(F("LoadDefaultPreset"));
+  LoadDefaultPreset();
+  Serial.print(F("DisplayWiperItem("));
+  Serial.print(curr_IDX);
+  Serial.println(F(");"));
+  DisplayWiperItem((DSP_IDX)curr_IDX);
+  delay(10);
+  Serial.println(F("SetStandby(false)"));
+  SetStandby(false);
+  Serial.flush();
+}
+
 void loop() 
 {
   delay(10);
-  
-#ifdef POWERSAVE_MODE_ACTIVE   
-  if ((RE_STATE == RE_STATE_DW) || (RE_STATE == RE_STATE_UP) || (ROT_ENC_BTN_PRESSED) || (digitalRead(EXT_BTN_ONE) == HIGH) || (digitalRead(EXT_BTN_TWO) == HIGH))
-  {
-    if (DisplayIsPowerSaveMode)
-    {
-      RE_STATE = RE_STATE_NO;
-      u8g2.setPowerSave(DISABLE_POWER_SAVE);
-      LoopCount = 0;
-      DisplayIsPowerSaveMode = false;
-      return;
-    }
-  } else
-  {
-    LoopCount++;
-    if (LoopCount > 1000)
-    {
-      if (!DisplayIsPowerSaveMode)
-      {
-        u8g2.setPowerSave(ENABLE_POWER_SAVE);
-        DisplayIsPowerSaveMode = true;
-        return;
-      }
-      LoopCount = 0;
-    }    
-  }
-#endif
 
   u8g2.clearBuffer();
   
@@ -668,6 +750,7 @@ void loop()
         ChangeExtValue(ext_IDX);
         break;
       default:
+        RunDebug();
         break;
     }
     
